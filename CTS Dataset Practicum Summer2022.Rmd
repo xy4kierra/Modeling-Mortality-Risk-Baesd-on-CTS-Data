@@ -1,0 +1,911 @@
+---
+title: "Predicting and Modeling Mortality Risk Baesd on CTS Data"
+author: "Kiera (Xiaoyu) Zhu"
+date: "8/9/2022"
+always_allow_html: TRUE
+output:
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1 Executive Summary
+
+The California Teachers Study (CTS) is an observational cohort study that follows and records health data from female teachers, administrators, school nurses, and other members of the California State Teachers Retirement System (CalSTRS). The data from the CTS has been used for extensive research into breast cancer while also giving insight into other cancers and diseases. The main focus of this explorational study is the OSHPD hospitalization records that contain hospitalization data for CTS participants. 
+
+The primary objectives of this study are as follows: 
+  
+  * 1) Develop the best fitting model that __predict the death risk within 1-month time window__ based on baseline characteristics and hospitalization.<br>
+  
+  * 2) check if time window works after putting hospitalization characteristics into model.<br>
+  
+  * 3) Assess what __certain co-morbidities and death causation__ are significant factors in predicting the risk of death.<br>
+  
+  * 4) Find out __temporal(seasonal)__ trends related to death.<br>
+
+__Finding 1: The XGBoot Model Is the Best Fitting Model.__
+
+__Finding 2: Time Window Works In Random Forest Model.___
+
+__Finding 3: Lifestyle Habbits Will Affect Your Health.__
+
+__Finding 4: Seasonal Variable Has Some Influence But Not Obvious.__
+
+
+# 2 Introducing the California Teachers Study (CTS)
+
+The California Teachers Study (CTS) is an observational cohort study established in 1995 that follows female teachers, administrators, school nurses, and other members of the California State Teachers Retirement System (CalSTRS). Members of the CalSTRS have provided information regarding their health and behaviors, and information regarding these patients have continued to be recorded and studied. The data provided has allowed for extensive research on breast cancer, and has given insight into other cancers and disease. This report will focus in particular on the OSHPD hospitalization records that contain hospitalization information from the participants of the CTS. 
+
+# 3 Objectives
+
+The primary objective of this report is to develop the best fitting model to predict the short-term risk of death based on baseline characteristics and hospitalization. The hospitalization data (which includes diagnoses, co-morbidities, length of stay, discharge date) of California Teacher's Study Participants from 2000 to 2015 will be used for the analysis. Key characteristics and possible co-variables such as age, ethnicity, height, and weight (taken from the California Teacher's Study Questionnaire) will also be incorporated. 
+
+Machine learning will be used to build the best fitting prediction model that predicts the probability of death after prior in-patient hospitalization. In particular, the effect of certain time windows between hospital discharge and death, as well as the effect of co-morbidities and specific procedures will be examined to determine their significant in predicting short-term risk of death after in-patient hospitalization. 
+
+```{r libraries, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(mlr3)
+library(dplyr)
+library(data.table)
+library(scales)
+library(stringr)
+library(caret)
+library(reshape2)
+library(mlr)
+library(purrr)
+library(lubridate)
+library(gridExtra)
+library(randomForest)
+library(pROC)
+library(rpart)
+library(gbm)
+library(zipcodeR)
+library(maps)
+library(xgboost)
+library(knitr)
+library(kableExtra)
+library(Hmisc)
+
+```
+
+
+# 4 Exploratory Data Analysis
+
+## 4.1 Basic Data Exploration
+```{r get uni_data,include = FALSE}
+params <- c("S:/Researcher Projects/Self Service Analysis Projects/10017_USCDAT/2022/Kierra Zhu/",
+           "O:/Datasets/10017_USCDAT/v01/10017_USCDAT_v01_20210609_2220_formats.csv",
+           "O:/Datasets/10017_USCDAT/v01/10017_USCDAT_v01_20210609_2220_analytic_data.csv",
+           "O:/Datasets/10017_USCDAT/uscdat_oshpd_formats.csv",
+           "O:/Datasets/10017_USCDAT/uscdat_oshpd_2022.csv")
+
+
+setwd(params[1])
+
+# reading in data types for survey data
+data_types_file <- read.csv(file = params[2],  
+                           na.strings = "",                    
+                           colClasses = "character")  
+
+# reading in data types for hospitalization data
+oshpd_data_types_file <- read.csv(file = params[4],  
+                                 na.strings = "",                    
+                                 colClasses = "character")  
+
+# creating a named character vector to use in assigning character and Date types for survey data
+data_types <- data_types_file[, 2]             
+names(data_types) <- data_types_file[, 1]  
+data_types <- data_types[data_types=="character" | data_types=="Date"]     
+
+# creating a named character vector to use in assigning Date types for hospitalization data
+oshpd_data_types <- oshpd_data_types_file[, 2]             
+names(oshpd_data_types) <- oshpd_data_types_file[, 1]  
+oshpd_data_types <- oshpd_data_types[oshpd_data_types=="Date"] 
+
+# reading in survey data and assigning data types
+analytic_data <- read.csv(file = params[3],
+                         na.strings = "",
+                         colClasses = data_types)
+
+# reading in hospitalization data file 
+oshpd_data <- read.csv(file = params[5], 
+                      na.strings = "")
+
+# converting date fields
+oshpd_data[names(oshpd_data_types)] <- lapply(oshpd_data[names(oshpd_data_types)], as.Date, "%m/%d/%Y")
+
+# dropping columns that already exist in analytic_data
+oshpd_data[c("date_of_birth_dt", "date_of_death_dt", "cause_of_death_cde", "cause_of_death_dsc", 
+            "qnr_1_fill_dt", "qnr_2_fill_dt", "ses_quartile_ind", "first_moveout_ca_dt")] <- list(NULL)
+
+# joining survey data and hospitalization data on participant_key
+combined_data <- inner_join(analytic_data, oshpd_data) # n = 154315
+
+# counting unique participants in the data
+#length(unique(combined_data$participant_key)) # n = 48324
+
+#uni_data <- 
+#  combined_data %>%
+#  dplyr::distinct(participant_key, .keep_all=TRUE)
+
+```
+
+The data set consists of  154315 CTS participants and 164 variable. The primary outcome that will be examined in this project is death of the CTS participants.
+
+
+```{r deceased table, echo = FALSE, result = 'asis'}
+data <- data.frame(combined_data,stringsAsFactors = TRUE)
+# data<-readRDS("ccdd.rds")
+data$deceased <- factor(data$deceased, levels = c(0,1),
+                        labels = c("No","Yes")) #convert deceased variable from number to factor 
+data %>%
+  count(deceased) %>%
+  kbl(col.names = c("Deceased","Frequency")) %>%
+  kable_styling()
+```
+
+Out of all of the participants in the data set, around 51.6% of participants with prior in-patient hospitalization records had died.  The data set is relatively balanced with regards to the target outcome and will help reduce potential biases when building prediction models. 
+
+## 4.2 Dealing with One Participant_key with Multiple Hospital Visits
+As shown in the follwoing graph, Many patients went to more than 1 hospitals, and about 95% of participants went to less than 8 hospitals. Although most of the basic characteristics remain unchanged for a patient, the hospitalization data from different hospitalization visits may differ. In this case, we only use the hospitalization data of the last visit for a patient for accuracy because we think it is the latest for most related to the patients' death risk. Finally, we get unique data set with __48324__ patients and corresponding variabels.
+
+```{r plot1 data,include=FALSE}
+plot0 = data[,c("participant_key","visit_id")]
+hos_counts = table(plot0$participant_key)
+names(hos_counts) = NULL
+hos_counts = as.data.frame(hos_counts)
+```
+
+
+```{r plot1,include=FALSE}
+p0<-
+ggplot(hos_counts, aes(x=Freq))+
+  geom_bar(aes(y=cumsum(..count..)/sum(..count..)),fill="steelblue")+
+  scale_y_continuous(labels=percent)+
+  xlab("different hospitals")+
+  ylab("cumulative sum of % of the data")+
+  geom_hline(yintercept=0.95,color="#9933FF")+
+  geom_vline(xintercept=8,color="#9933FF")
+```
+
+```{r show p0,echo=FALSE,result = 'asis'}
+# p0<-readRDS("p0.rds")
+p0
+```
+
+
+```{r uni_data,include=FALSE}
+ data = as.data.table(data)
+ data<- data[,.SD[which.max(discharge_dt)],by=participant_key]
+ data<-as.data.frame(data)
+```
+
+
+
+## 4.3 Variable Selection: Choose Only Important Variables
+Especially because over 150 variables may be overwhelming to look through, a main focus will be on choosing primary variables and deleting duplicated and irrelevant variables.
+```{r g-group}
+# g-group: patients' personal information
+# g1: Variables related to birth, death, age
+g1= c('date_of_birth_dt', 'date_of_death_dt','age_at_baseline')
+# g2: Variables related to demography and personal characteristics
+g2 = c('ses_quartile_ind','height_q1','weight_q1','bmi_q1','participant_race','adopted', 'twin')
+# g3: Variables related to medical history
+g3= c('hysterectomy_ind', 'bilateral_mastectomy_ind','bilateral_oophorectomy_ind', 'preg_ever_q1', 'brca_selfsurvey', 'mammo_ever_q1',
+      'endoca_self_q1', 'cervca_self_q1','ovryca_self_q1', 'lungca_self_q1', 'leuk_self_q1', 'hodg_self_q1', 'colnca_self_q1', 'thyrca_self_q1', 'meln_self_q1', 'diab_self_q1', "stroke_self_q1","hrtatk_self_q1","hbp_self_q1",
+      'asthma_q3')
+# g4: variables related to physical activity, smoking, alcohol usage and diet
+g4= c('allex_hrs_q1', 'sit_hrs','sleep_hrs', 'vit_reg_no',
+      'diet_plant', 'diet_highprotfat','alchl_analyscat', 'smoke_statcat' )
+```
+
+```{r h-group}
+# h-group: hisptalized information
+# h1: admission and discharge date to be transformed
+h1 = c("admission_dt","discharge_dt")
+# h2: visit information
+h2 = c("admission_typ","length_of_stay_day_cnt","dnr_flg",'major_diag_cat_cde', "patient_care_typ","patient_disposition_cde")
+# h3: payer information
+h3 = c("payer_cat_cde","total_charges_amt")
+# h4~h5: diagnoses and procedures by ccs categories
+h4 = c("diag_ccs_code1", "proc_ccs_code1")
+```
+
+```{r t-group}
+# t-group: target variable
+# t1: Indicator for deceased.0=No; 1=Yes. 
+t1= c("deceased")
+```
+
+```{r get select_data, include=FALSE}
+#get selected features together
+feature = c("participant_key",g1,g2,g3,g4,h1,h2,h3,h4,t1)
+select_data = data[,feature]
+```
+
+
+## 4.4 Primary Exposures
+### 4.4.1 Major Diagnostic Categories
+The Major Diagnostic Categories (MDC) are formed by dividing all possible principal diagnoses (from ICD-9) into 25 mutually exclusive diagnosis groupings. The diagnoses in each MDC correspond to a single organ system or etiology and, in general, are associated with a particular medical specialty.
+
+```{r mdc,include=FALSE}
+# major diagnostic categories in death population
+# data<-readRDS("sldd.rds")
+data<- select_data
+
+p1<-
+  data%>%
+  ggplot(aes(y=factor(major_diag_cat_cde),fill=deceased))+
+  geom_bar(position = position_dodge())+
+  scale_fill_brewer(palette = "Paired",labels=c("0"="No","1"="Yes"))+
+  labs(x="population",y=" ", title="Major Diagnosis Disease and Disorders in Participants")+
+  scale_y_discrete(labels=c("0"="Ungroupable","1"="Nervous","2"="Eye","3"="Ear",
+                            "4"="Respiratory System","5"="Circulatory System","6"="Digestive System",
+                            "7"="Hepatobiliary System & Pancreas","8"="Musculoskeletal System ",
+                            "9"="Skin & Breast","10"="Endocrine & Metabolic","11"="Kidney and Urinary Tract",
+                            "12"="Male Reproductive System", "13"="Female Reproductive System",
+                            "14"="Pregnancy & Childbirth","15"="Newborns and Neonate Conditions",
+                            "16"="Blood & Immunological","17"="Myeloproliferative ",
+                            "18"="Infectious & Parasitic","19"="Mental","20"="Alcohol-Drug Use",
+                            "21"="Injuries & Poisonings","22"="Burns","23"= "Factors on Health Status",
+                            "24"=" Multiple Signficant Trauma", "25"="Immunodeficiency Virus Infection"))+
+   theme_minimal()
+```
+
+```{r p1,echo = FALSE, result = 'asis'}
+# p1<-readRDS("p1.rds")
+p1
+```
+
+
+### 4.4.2 Diagnosis CCS Code 
+
+The diagnosis CCS code contains information regarding the different diagnoses that the CTS participant received during hospitalization. In the data set, there are five different diagnosis ccs codes, with one of the five as the primary diagnosis. All five diagnoses CCS codes will be included in the prediction model, but the frequency of different primary diagnoses will be further examined. 
+
+```{r head dia ccs, include=FALSE}
+head(data %>% count(diag_ccs_code1, sort = TRUE),10)
+```
+
+```{r mutate ccs,include=FALSE}
+data <- data %>% 
+  mutate(diag_ccs_freq1 = case_when(diag_ccs_code1 == 203 ~ "Osteoarthritis",
+                                    diag_ccs_code1 == 2 ~ "Tuberculosis",
+                                    diag_ccs_code1 == 0 ~ "Undefined",
+                                    diag_ccs_code1 == 109 ~"Acute cerebrovascular disease",
+                                    diag_ccs_code1 == 226 ~"Fracture of neck of femur",
+                                    diag_ccs_code1 == 106 ~"Cardiac dysrhythmias",
+                                    diag_ccs_code1 == 122 ~"Pneumonia",
+                                    diag_ccs_code1 == 205 ~"Spondylosis;intervertebral disc disorders;back problems",
+                                    diag_ccs_code1 == 46 ~"Benign neoplasm of uterus",
+                                    diag_ccs_code1 == 108 ~"Congestive heart failure; nonhypertensive",
+                                    is.na(diag_ccs_code1) ~ "Alive",
+                                    TRUE~ "Other"))
+
+data$diag_ccs_freq1 <- as.factor(data$diag_ccs_freq1)
+```
+
+
+
+```{r show p2, echo = FALSE, result = 'asis'}
+p2<-data %>% 
+  filter(!(diag_ccs_freq1 %in% NA)) %>% 
+  count(diag_ccs_freq1, sort = TRUE) %>%
+  kbl(col.names = c("Primary Diagonise","Frequency")) %>%
+  kable_styling()
+p2
+```
+
+### 4.4.3 Procedure CSS Code 
+
+The procedure CSS code functions similarly to the diagnoses CCS code mentioned previously. The procedure CCS code contains information regarding the procedure that the participant underwent during hospitalization. There were five procedure CCS codes given in the dataset, and all five will be included in the model. However, just as with the diagnoses CCS codes, the different primary procedures will be further examined. 
+
+```{r head proc ccs, include=FALSE}
+head(data %>% count(proc_ccs_code1, sort = TRUE),10)
+```
+
+```{r mutate proc ccs, include = FALSE}
+data <- data %>% 
+  mutate(proc_ccs_freq1 = case_when(proc_ccs_code1 == 152 ~ "Arthroplasty Knee",
+                                    proc_ccs_code1 == 153 ~ "Hip Replacement",
+                                    proc_ccs_code1 == 0 ~ "Undefined",
+                                    proc_ccs_code1 == 222 ~"Blood Transfusion",
+                                    proc_ccs_code1 == 124 ~"Hysterectomy",
+                                    proc_ccs_code1 == 146 ~"Fracture Treatment",
+                                    proc_ccs_code1 == 213 ~"Physical Therapy",
+                                    proc_ccs_code1 == 137 ~"Other procedures to assist delivery",
+                                    proc_ccs_code1 == 158 ~"Spinal Fusion",
+                                    proc_ccs_code1 == 216 ~"Respiratory Intubation",
+                                    is.na(proc_ccs_code1) ~ "Alive",
+                                    TRUE~ "Other"))
+
+data$proc_ccs_freq1 <- as.factor(data$proc_ccs_freq1)
+```
+
+
+```{r p3, echo = FALSE, result = 'asis'}
+p3<-data %>% 
+  filter(!(proc_ccs_freq1 %in% NA)) %>% 
+  count(proc_ccs_freq1, sort = TRUE) %>%
+  kbl(col.names = c("Primary Diagonise","Frequency")) %>%
+  kable_styling()
+p3
+```
+
+### 4.4.4 Age
+
+Age is one of the baseline covariates in regards to patient health. Therefore, __age_at_death__ is created as new variable. The age for each participant will be calculated. For participants that have died, the age in which they passed away will be calulated. For participants that are still alive, their age at the end of 2015 will be caculated, as this study will only be looking at hospitalization data until the year 2015. 
+
+```{r age_at_death , include= FALSE}
+data <- data %>%
+  mutate(age_at_death = as.numeric(round((data$date_of_death_dt-data$date_of_birth_dt)/365)))
+
+data <- data %>%
+  mutate(age_at_death = ifelse(is.na(data$age_at_death),as.numeric(round((as.Date("2015-12-31")-data$date_of_birth_dt)/365)),data$age_at_death))
+
+summary(data$age_at_death)
+```
+
+```{r p4, echo = FALSE}
+p4<-ggplot(data)+
+  geom_histogram(aes(x = age_at_death, color = deceased, fill = deceased), binwidth = 5)+
+  labs(x = "Age", y = "Frequency")
+p4
+```
+
+
+## 4.5 Data Processing in Detail
+```{r drop off abandoned variables,include=FALSE}
+data<- select(data, -"participant_key",-"proc_ccs_code1",-"diag_ccs_code1")
+```
+
+### 4.5.1 Admission Date Later Than Death Date
+
+
+```{r select_data to data, include=FALSE}
+data <- data[is.na(data$date_of_death_dt) | 
+               (data$admission_dt <= data$date_of_death_dt & 
+                  data$date_of_death_dt >= data$discharge_dt), ]
+
+# 48178 
+```
+
+There may be misfilling happened that some data's admission dates are later than death date. So we delete these invalid data. There are `r dim(data)[1]` records now.
+
+### 4.5.2 Missing Data
+Looking at character value counts, the most missing variables are self-filling questions, which are not filled mostly because they didn't have the disease. So we label them and set NA to "B" or "N".
+Looking at numeric variables, the most missing variable are self-filling basic information. For example, diet_highprotfat and diet_plant, which produce NA because excel problem. So we are going to fill these NA with mean of each variable. And for questionnare variable like preg_ever_q1, I just set NAs to 0.
+.
+
+```{r char missing, include=FALSE}
+char_data <- select_if(data, is.character)
+missing_value1<-char_data %>% summarize_each(funs(sum(is.na(.))))
+missing_value1<-gather(missing_value1,key='feature',value='missing_value')
+```
+
+```{r num missing, include=FALSE}
+num_data <- select_if(data, is.numeric)
+missing_value2<-num_data%>% summarize_each(funs(sum(is.na(.))))
+missing_value2<-gather(missing_value2,key='feature',value='missing_value')
+```
+
+```{r eliminate char missing data,include=FALSE}
+data$vit_reg_no[is.na(data$vit_reg_no)] = "B"
+data$asthma_q3[is.na(data$asthma_q3)] = "N"
+data$endoca_self_q1[is.na(data$endoca_self_q1)] = "B"
+data$cervca_self_q1[is.na(data$cervca_self_q1)] = "B"
+data$ovryca_self_q1[is.na(data$ovryca_self_q1)] = "B"
+data$lungca_self_q1[is.na(data$lungca_self_q1)] = "B"
+data$leuk_self_q1[is.na(data$leuk_self_q1)] = "B"
+data$hodg_self_q1[is.na(data$hodg_self_q1)] = "B"
+data$colnca_self_q1[is.na(data$colnca_self_q1)] = "B"
+data$thyrca_self_q1[is.na(data$thyrca_self_q1)] = "B"
+data$meln_self_q1[is.na(data$meln_self_q1)] = "B"
+data$diab_self_q1[is.na(data$diab_self_q1)] = "B"
+data$stroke_self_q1[is.na(data$stroke_self_q1)] = "B"
+data$hrtatk_self_q1[is.na(data$hrtatk_self_q1)] = "B"
+data$hbp_self_q1[is.na(data$hbp_self_q1)] = "B"
+data$mammo_ever_q1[is.na(data$mammo_ever_q1)] = "N"
+data$adopted[is.na(data$adopted)] = "N"
+data$twin[is.na(data$twin)] = "A"
+data$sit_hrs[is.na(data$sit_hrs)] = "A"
+data$sleep_hrs[is.na(data$sleep_hrs)] = "A"
+data$brca_selfsurvey[is.na(data$brca_selfsurvey)] = "N"
+data$dnr_flg[is.na(data$dnr_flg)] = "N"
+```
+
+```{r eliminate num missing data,include=FALSE}
+data$diet_plant[is.na(data$diet_plant)] = mean(data$diet_plant,na.rm = TRUE)
+data$diet_highprotfat[is.na(data$diet_highprotfat)]= mean(data$diet_highprotfat,na.rm = TRUE)
+data$alchl_analyscat[is.na(data$alchl_analyscat)]= 0
+data$weight_q1[is.na(data$weight_q1)] = mean(data$weight_q1,na.rm = TRUE)
+data$bmi_q1[is.na(data$bmi_q1)] = mean(data$bmi_q1,na.rm = TRUE)
+data$ses_quartile_ind[is.na(data$ses_quartile_ind)] = round(mean(data$ses_quartile_ind,na.rm = TRUE))
+data$preg_ever_q1[is.na(data$preg_ever_q1)]= 0
+data$allex_hrs_q1[is.na(data$allex_hrs_q1)]= 0
+data$smoke_statcat[is.na(data$smoke_statcat)]= 1; 
+data$height_q1[is.na(data$height_q1)] = mean(data$height_q1,na.rm = TRUE)
+data$patient_disposition_cde[is.na(data$patient_disposition_cde)]=0
+```
+
+### {.tabset}
+#### char missing map 
+```{r p5,echo=FALSE}
+p5<- missing_value1 %>%
+  ggplot(aes(x=reorder(feature,-missing_value), y=missing_value))+
+  geom_bar(stat='identity',fill='steelblue')+
+  coord_flip()+
+  theme_bw()
+p5
+```
+
+#### num missing map
+```{r p6,echo=FALSE}
+p6<- missing_value2%>%
+  ggplot(aes(x=reorder(feature,-missing_value), y=missing_value))+
+  geom_bar(stat='identity',fill='steelblue')+
+  coord_flip()+
+  theme_bw()
+p6
+```
+
+
+## 4.6 Turn Variable into Factors
+
+This is one complicated process in the study. I check every single variable selected. For those are meant to be factors with two categories, I create the categories for them. And for multiple categories, I turn them all into different factor levels. And for sleep_hrs and sit_hrs these two variables which were char variables, I turn them into numeric variables by giving them matching values.
+
+```{r turn factor, include=FALSE}
+data$vit_reg_no <- factor(data$vit_reg_no,levels = c("A","B"), labels=c(1,0))
+data$asthma_q3 <- factor(data$asthma_q3,levels = c("Y","N"), labels=c(1,0))
+data$dnr_flg <- factor(data$dnr_flg,levels = c("Y","N"), labels=c(1,0))
+data$endoca_self_q1 <- factor(data$endoca_self_q1,levels = c("A","B"), labels=c(1,0))
+data$cervca_self_q1 <- factor(data$cervca_self_q1,levels = c("A","B"), labels=c(1,0))
+data$ovryca_self_q1 <- factor(data$ovryca_self_q1,levels = c("A","B"), labels=c(1,0))
+data$lungca_self_q1 <- factor(data$lungca_self_q1,levels = c("A","B"), labels=c(1,0))
+data$leuk_self_q1 <- factor(data$leuk_self_q1,levels = c("A","B"), labels=c(1,0))
+data$hodg_self_q1 <- factor(data$hodg_self_q1,levels = c("A","B"), labels=c(1,0))
+data$colnca_self_q1 <- factor(data$colnca_self_q1,levels = c("A","B"), labels=c(1,0))
+data$thyrca_self_q1 <- factor(data$thyrca_self_q1,levels = c("A","B"), labels=c(1,0))
+data$meln_self_q1 <- factor(data$meln_self_q1,levels = c("A","B"), labels=c(1,0))
+data$diab_self_q1 <- factor(data$diab_self_q1,levels = c("A","B"), labels=c(1,0))
+data$stroke_self_q1 <- factor(data$stroke_self_q1,levels = c("A","B"), labels=c(1,0))
+data$hrtatk_self_q1 <- factor(data$hrtatk_self_q1,levels = c("A","B"), labels=c(1,0))
+data$hbp_self_q1 <- factor(data$hbp_self_q1,levels = c("A","B"), labels=c(1,0))
+data$mammo_ever_q1 <- factor(data$mammo_ever_q1,levels = c("Y","N"), labels=c(1,0))
+data$brca_selfsurvey <-factor(data$brca_selfsurvey,levels = c("Y","N"), labels=c(1,0))
+data$adopted <- factor(data$adopted,levels = c("Y","N"), labels=c(1,0))
+data$twin <- factor(data$twin,levels = c("B","A"), labels=c(1,0))
+data$smoke_statcat <- as.factor(data$smoke_statcat)
+data$preg_ever_q1 <- as.factor(data$preg_ever_q1)
+data$patient_disposition_cde <- as.factor(data$patient_disposition_cde)
+data$ses_quartile_ind<- as.factor(data$ses_quartile_ind)
+data$participant_race <- as.factor(data$participant_race)
+data$hysterectomy_ind<- as.factor(data$hysterectomy_ind)
+data$bilateral_mastectomy_ind <- as.factor(data$bilateral_mastectomy_ind)
+data$bilateral_oophorectomy_ind <- as.factor(data$bilateral_oophorectomy_ind)
+data$alchl_analyscat <-as.factor(data$alchl_analyscat)
+data$admission_typ <-as.factor(data$admission_typ)
+data$major_diag_cat_cde <-as.factor(data$major_diag_cat_cde)
+data$patient_care_typ <-as.factor(data$patient_care_typ)
+data$payer_cat_cde <- as.factor(data$payer_cat_cde)
+
+data <- data %>% mutate(sleep_hrs = case_when(sleep_hrs == "A" ~ 0,sleep_hrs == "B" ~ 0.5,sleep_hrs == "C" ~ 1,sleep_hrs == "D" ~ 2,sleep_hrs == "E" ~ 3.5,sleep_hrs == "F" ~ 5.5,sleep_hrs == "G" ~ 8,sleep_hrs == "H" ~ 10))
+data <- data %>% mutate(sit_hrs = case_when(sit_hrs == "A" ~ 0,sit_hrs == "B" ~ 0.5,sit_hrs == "C" ~ 1,sit_hrs == "D" ~ 2,sit_hrs == "E" ~ 3.5,sit_hrs == "F" ~ 5.5,sit_hrs == "G" ~ 8,sit_hrs == "H" ~ 10))
+```
+
+```{r check data}
+dim(data)[2]
+sum(sapply(data,is.factor))
+sum(sapply(data,is.numeric))
+```
+
+
+## 4.7  Create new variables
+
+As the objectives mentioned above, we should build some specific variables for further study. So discharge_to_death, discharge_to_death_cat, death_1mon, death_6mon, death_1yr, death_2yr, death_up5yr, season_death,date_of_death_dt are created.
+
+### 4.7.1 Time Window After Death
+
+One of the aims of this research project is to predict the probability of death within a certain time window after hospitalization and to assess whether the time window itself is a significant factor in assessing the risk of death. Therefore, a new variable will be created to count the number days between discharge from the hospital and the date of death. 
+
+```{r create discharge_to_death,include=FALSE}
+# Time to death (days from discharge to death)
+data <- data %>%
+  mutate(discharge_to_death = 
+           as.numeric(as.Date(data$date_of_death_dt) 
+                      - as.Date(data$discharge_dt)))
+```
+
+
+```{r create death_cat variables,include=FALSE}
+# Time to death (as categories)
+data <- 
+  data %>%
+  mutate(discharge_to_death_cat = case_when(
+    discharge_to_death %in% 0:30 ~ "1 month",
+    discharge_to_death %in% 31:180 ~ "6 months",
+    discharge_to_death %in% 181:365 ~ "1 yr",
+    discharge_to_death %in% 366:730 ~ "2 yrs",
+    discharge_to_death %in% 731:1825 ~ "5 yrs",
+    discharge_to_death %in% 731:10000 ~ "5 yrs+"
+  ))
+
+```
+
+```{r create death_1mon, include=FALSE}
+# create time window factors
+data <- 
+  data %>%
+  mutate(death_1mon = case_when(
+    discharge_to_death_cat != "1 month" ~ 0,
+    discharge_to_death_cat == "1 month" ~ 1
+  ))
+data$death_1mon[is.na(data$death_1mon)] = 0
+
+
+data <- 
+  data %>%
+  mutate(death_6mon = case_when(
+    discharge_to_death_cat != "6 months" ~ 0,
+    discharge_to_death_cat == "6 months" ~ 1
+  ))
+data$death_6mon[is.na(data$death_6mon)] = 0
+
+
+data <- 
+  data %>%
+  mutate(death_1yr = case_when(
+    discharge_to_death_cat != "1 yr" ~ 0,
+    discharge_to_death_cat == "1 yr" ~ 1
+  ))
+data$death_1yr[is.na(data$death_1yr)] = 0
+
+
+# For death in 1-2 yrs from discharge
+data <- 
+  data %>%
+  mutate(death_2yr = case_when(
+    discharge_to_death_cat != "2 yrs" ~ 0,
+    discharge_to_death_cat == "2 yrs" ~ 1
+  ))
+data$death_2yr[is.na(data$death_2yr)] = 0
+
+
+# For death in 2 - 5 yrs from discharge
+data <- 
+  data %>%
+  mutate(death_5yr = case_when(
+    discharge_to_death_cat != "5 yrs" ~ 0,
+    discharge_to_death_cat == "5 yrs" ~ 1
+  ))
+data$death_5yr[is.na(data$death_5yr)] = 0
+
+
+# For death in 5 yrs and above from discharge
+data <- 
+  data %>%
+  mutate(death_up5yr = case_when(
+    discharge_to_death_cat != "5 yrs+" ~ 0,
+    discharge_to_death_cat == "5 yrs+" ~ 1
+  ))
+data$death_up5yr[is.na(data$death_up5yr)] = 0
+
+data$death_1mon <-as.factor(data$death_1mon)
+data$death_6mon <-as.factor(data$death_6mon)
+data$death_1yr <-as.factor(data$death_1yr)
+data$death_2yr <-as.factor(data$death_2yr)
+data$death_5yr <-as.factor(data$death_5yr)
+data$death_up5yr <-as.factor(data$death_up5yr)
+```
+
+
+```{r death_cat variables table}
+data %>%
+  group_by(discharge_to_death_cat) %>%
+  summarise(n = n())
+```
+
+### 4.7.2 Temporal Trends Variable
+I also create seasonality of death (season_death), to see if there's seasonal pattern related to death.
+
+```{r create new variable, include=FALSE}
+# Seasonality of death
+data <- 
+  data %>%
+  mutate(date_of_death_dt = as.Date(date_of_death_dt))
+
+data <- 
+  data %>%
+  mutate(season_death = case_when(
+    month(date_of_death_dt) %in% 1:2&12 ~ "Winter",
+    month(date_of_death_dt) %in% 3:5 ~ "Spring",
+    month(date_of_death_dt) %in% 6:8 ~ "Summer",
+    month(date_of_death_dt) %in% 9:11 ~ "Fall",
+    is.na(date_of_death_dt) ~ "Alive",
+    TRUE~ "Alive"
+  ))
+data$season_death<-as.factor(data$season_death)
+```
+
+```{r season_death variables table,echo=FALSE}
+data %>%
+  group_by(season_death) %>%
+  summarise(n = n())
+```
+
+# 5 Machine Learning Models
+After cleaning the dataset, I build a series of model to meet the objectives above. Mainly it's two parts, which are Feature Selection part and Making Predicting Model part.
+For feature selection, the standard 75:25 training and testing split would be used for more training dataset to see variable importance. And the key for classification is variable deceased.
+For model-building, the standard 70:30 training and testing split would be used for more testing dataset to test model performance. And we only keep death_1mon as certaion time window and key for classification.
+
+## 5.1 Feature selection: use Random Forest Model
+Random forests will be used to create decision trees that will predict the short-term risk of death in CTS participants with prior hospitalization records. In total, there are 54 features that will be used to create the random forests. These features include our outcome of interest, whether the participant died after being discharged, and hospitalization data such as diagnoses and procedure codes. Key demographic data such as age and race are also included. Also, information regarding certain lifestyle behaviors, such as alcohol and tobacco use, physical exercise, and diet was also incorporated.
+
+```{r rf-data,include=FALSE}
+rf_data<-select(data,-"date_of_birth_dt",-"date_of_death_dt",-"discharge_to_death_cat",-"discharge_to_death",-"admission_dt",-"discharge_dt")
+rf_data<- na.omit(rf_data)
+```
+
+```{r rf-task, include = FALSE}
+rf_task<-makeClassifTask(id="CTS Random Forest Tree", data=rf_data, target="deceased")
+rf_desc <-makeResampleDesc("Holdout", stratify= TRUE, split=0.75)
+
+set.seed(101)
+
+rf_split<- makeResampleInstance(rf_desc, rf_task)
+train = rf_data[rf_split$train.inds[[1]],]
+test= rf_data[rf_split$test.inds[[1]],]
+
+table(train$deceased)
+rf_train <- randomForest(deceased~., data = train,
+                                strata = train$deceased,
+                                ntree = 1501)
+```
+
+
+```{r rf-roc, include = FALSE}
+# rf_train<-readRDS("rf_train.rds")
+ rf_roc_train <- roc(train$deceased, rf_train$votes[,1])
+ 
+ auc(rf_roc_train)
+ 
+ rf_predict_test <- predict(rf_train,
+                            newdata = test,
+                            type = 'prob')
+ 
+ rf_roc_test <- roc(test$deceased,rf_predict_test[,1])
+```
+
+After running the random forest, the resulting AUC value is 0.9803, indicating that the random forest model is able to accurately predict death in participants with prior hospitalization records. 
+
+```{r rf-plot, echo = FALSE}
+# rf_roc_test<-readRDS("rf_roc_test.rds")
+plot(rf_roc_test, lwd = 2, col = 'red4', cex.axis = 1.3, cex.lab = 1.3)
+pROC::auc(rf_roc_test)
+```
+
+
+```{r get ms1,echo=FALSE}
+varImpPlot(rf_train, cex = 0.7, pt.cex = 1.2, n.var = 20, pch = 16, col = 'red4', main = "Variable Importance for Deaths After Hospitalization")
+```
+
+
+
+## 5.2 Best Fitting Model 
+Random forest, bagging and XGBoost models were selected to perform classification. Results in __table 1__ showed that the test AUCs of the best model of each type were very similar. All these three model, I set __death_1mon__ as certain time windom. Especially as time goes on, like when a participant is over five years out from a hospitalization, it may be harder to attribute death to their hospitalization.
+
+For the Random Forest models, the test AUC is 0.969, which denotes great performance in distinguishing between classes. Using training and testing sets with a 70:30 split and a balanced Random Forest model. And by viewing the ROC curve, it is evident that a trade-off exists between specificity and sensitivity.
+
+For the Bagging model, the results is very similar with random forest model but more flexible. Bagging fits multiple models based on different datasets. The test AUC is 0.969. And both bagging and random forest are suitable for imbalanced data like CTS.
+
+For XGBoost, or extreme gradient boosting model, its test AUC is highest, which is 0.972. This model was able to include the most features and handle factor variables with many levels. That's why its performance is the best.
+
+```{r classification error function,include=FALSE}
+# classification error function
+classificationError<- function(confMatrix,dataset){
+  error= (confMatrix[1,2]+confMatrix[2,1])/sum(confMatrix)
+  sens = confMatrix[2,2]/(confMatrix[2,1]+confMatrix[2,2])
+  spec = confMatrix[1,1]/(confMatrix[1,1]+confMatrix[1,2])
+  return(c(error=error,sensitivity=sens,specificity=spec))
+}
+```
+
+```{r cl_data,include=FALSE}
+cl_data<-select(data,-date_of_birth_dt,-date_of_death_dt,-discharge_to_death_cat,-discharge_to_death,-admission_dt,-discharge_dt,-lungca_self_q1,-ovryca_self_q1,-thyrca_self_q1,-cervca_self_q1,-hodg_self_q1,-adopted,-colnca_self_q1,-twin,-bilateral_mastectomy_ind,-meln_self_q1,-stroke_self_q1,-endoca_self_q1,-death_6mon,-death_1yr,-death_2yr,-death_5yr,-death_up5yr)
+cl_data<- na.omit(cl_data)
+dim(cl_data)
+```
+
+```{r crf_tsk,include=FALSE}
+### specify the task and the learner
+set.seed(101)
+crf_tsk<- mlr::makeClassifTask(id="mortality risk after discharge",data=cl_data,target="death_1mon")
+crf_desc <-makeResampleDesc("Holdout", stratify= TRUE, split=0.7)
+crf_split<- makeResampleInstance(crf_desc, crf_tsk)
+train = cl_data[crf_split$train.inds[[1]],]
+test= cl_data[crf_split$test.inds[[1]],]
+```
+
+```{r rf_auc,include=FALSE}
+# random forest classification
+cl_rf<-randomForest::randomForest(death_1mon ~ ., data = train,
+                       mtry=dim(train)[2]-1,
+                       strata=train$death_1mon,
+                       sampsize= as.vector(table(train$death_1mon)))
+# cl_rf<-readRDS("cl_rf.rds")
+
+#calculate the performance metrics
+cl_rf_predict<-predict(cl_rf,newdata=test,type="prob")
+rf_roc_test<-pROC::roc(test$death_1mon,cl_rf_predict[,1])
+rf_auc<-round(pROC::auc(rf_roc_test),4) # test AUC
+
+
+# classification error
+cl_rf_predict_conf<-predict(cl_rf,newdata=test,type="class")
+confMatrix_rf<-with(test,table(cl_rf_predict_conf,death_1mon))
+rf_metric<-classificationError(confMatrix_rf)
+rf_sen<- round(rf_metric[2],4)
+rf_spec<-round(rf_metric[3],4)
+
+```
+
+```{r cl_bg,include=FALSE}
+# bagging classification 
+cl_bg<-randomForest::randomForest(death_1mon ~ ., data = train,
+                       strata=train$death_1mon,
+                       sampsize= as.vector(table(train$death_1mon)),
+                       importance=TRUE)
+
+# cl_bg<-readRDS("cl_bg.rds")
+
+#calculate the performance metrics
+cl_bg_predict<-predict(cl_bg,newdata=test,type="prob")
+bg_roc_test<-pROC::roc(test$death_1mon,cl_bg_predict[,1])
+bg_auc<-round(pROC::auc(bg_roc_test),4) # test AUC
+
+
+# classification error
+cl_bg_predict_conf<-predict(cl_bg,newdata=test,type="class")
+confMatrix_bf<-with(test,table(cl_bg_predict_conf,death_1mon))
+bg_metric<-classificationError(confMatrix_bf)
+bg_sen<- round(bg_metric[2],4)
+bg_spec<-round(bg_metric[3],4)
+
+```
+
+
+
+```{r xbg cl,include=FALSE}
+# XGBoost Classification
+xgb_num<- select_if(cl_data, is.numeric) 
+xgb_cat<- select_if(cl_data, is.factor) # select categorical variables for one-hot convert
+
+
+one_matrix<-model.matrix(death_1mon~.-1, xgb_cat)
+one_matrix<-cbind(one_matrix,xgb_num)
+one_matrix<- data.matrix(one_matrix)
+
+one_index<- sample(1:nrow(one_matrix),floor(0.7*nrow(one_matrix)))
+train<- one_matrix[one_index,]
+test<-one_matrix[-one_index,]
+
+
+# convert to xgb matrix
+xgb_train<-xgb.DMatrix(data=train,label=as.numeric(as.character(cl_data[one_index,]$death_1mon)))
+# train a model with training set
+xgb_model<-xgboost(data=xgb_train, nrounds = 40, max.depth=8, objective="binary:logistic")
+
+#Test dataset
+xgb_test<-xgb.DMatrix(data=test,label=as.numeric(as.character(cl_data[-one_index,]$death_1mon)))
+
+# tuning parameters
+##default parameters
+params<- list(booster="gbtree",objective="binary:logistic",eta=0.3,gamma=0,max_depth=6,min_child_weight=1,
+              subsampple=1,colsample_bytree=1)
+
+xgbcv<-xgb.cv(params = params,data= xgb_train,nrounds=100,nfold=10,showsd = T, 
+              stratified = T, print_every_n = 10,early_stopping_rounds = 20,maximize = F)
+
+## best iterations: xgbcv$best_iteration=74
+xgb_tune<- xgb.train(params = params,data= xgb_train, nrounds=74, 
+                     watchlist = list(val=xgb_test, train=xgb_train),print_every_n = 10,
+                     early_stopping_rounds = 10,maximize = F, eval_metric="error")
+
+# xgb_tune <-readRDS("xgb_tune.rds")
+# model predict
+xgb_tune_pred<- predict(xgb_tune,xgb_test)
+# auc
+xgb_tune_roc<-pROC::roc(cl_data[-one_index,]$death_1mon,xgb_tune_pred)
+xgb_tune_auc<-round(pROC::auc(xgb_tune_roc),4)
+# confusion matrix
+xgb_tune_pred_conf<-ifelse(predict(xgb_tune,xgb_test,type="class")>0.5,1,0)
+confMatrix_xbg_tune<-with(cl_data[-one_index,],table(xgb_tune_pred_conf,death_1mon))
+xgb_tune_metric<-classificationError(confMatrix_xbg_tune)
+xgb_tune_sen<- round(xgb_tune_metric[2],4)
+xgb_tune_spec<-round(xgb_tune_metric[3],4)
+
+```
+
+```{r table1}
+#performance metric table of 1-month time window
+
+table <-matrix(c(rf_auc,bg_auc,xgb_tune_auc,rf_sen,bg_sen,xgb_tune_sen,rf_spec,bg_spec,xgb_tune_spec),ncol= 3,nrow=3,dimnames=list(c("Random Forest","Bagging","XGBoost"),c("AUC","Sensitivity","Specificity")))
+
+# table<-readRDS("table1.rds")            
+kable<- kable(table,caption="Table 1: Performance matrix of different classification")
+kable_styling(kable)
+```
+##  {.tabset}
+### Random Forest 
+```{r rf_roc_test,echo=FALSE}
+plot(rf_roc_test,col="steelblue",lwd=2,cex.lab=1.2,cex.axis=1.2,main="ROC")
+legend("bottomright","Random Forest (AUC=0.9680)",lwd=2,cex=0.8)
+```
+
+```{r rf_imp,echo=FALSE}
+randomForest::varImpPlot(cl_rf,cex=0.8,pt.cex=1,n.var=20,
+                         main="predictors importance",pch=16,col="steelblue")
+```
+
+
+### Bagging
+```{r bg_roc_test,echo=FALSE}
+plot(bg_roc_test,col="lightblue",lwd=2,cex.lab=1.2,cex.axis=1.2,main="ROC")
+legend("bottomright","Bagging (AUC=0.9705)",lwd=2,cex=0.8)
+```
+
+```{r bg_imp,echo=FALSE}
+randomForest::varImpPlot(cl_bg,cex=0.8,pt.cex=1,n.var=20,
+                         main="predictors importance",pch=16,col="steelblue")
+```
+
+
+### XBGoot 
+```{r xgb_tune_roc,echo=FALSE}
+# xgb_tune_roc<-readRDS("xgb_tune_roc.rds")
+plot(xgb_tune_roc,col="purple",lwd=2,cex.lab=1.2,cex.axis=1.2,main="ROC")
+legend("bottomright","XGBoost (AUC=0.9716)",lwd=2,cex=0.8)
+```
+
+```{r xgb_imp,echo=FALSE}
+mat<-xgb.importance(feature_names = colnames(one_matrix),model = xgb_tune )
+xgb.plot.importance(importance_matrix = mat[1:20],col="steelblue",xlab="Relative importance")
+```
+
+
+# 6 Conclusion
+__Finding 1: The XGBoot Model Is the Best Fitting Model.__
+
+We can see in table 1, the XGBoot model has best performance. To help balance the XGBoot model, the scale_pos_weight was assigned the standard value of the number of the majority class divided by the minority class, which ended up being roughly 30 in both cases. And, balanced accuracy was calculated here.
+
+__Finding 2: Time Window Works After Putting Other Variables In.___
+For feature selection part, we can see most time window variables(death1mon, death3mon, death1yr ec.) have great effect on prediction the risk of death. 
+So maybe we should focus on patient just out of hospital and keep following up their condition to decrease mortality rate.
+
+__Finding 3: Lifestyle Habbits Will Affect Your Health.__
+Many of the important variables in each of the models are similar. The ones with most overlap, which can help inform later model creation, between the two RF models created are:
+
+* Patient disposition codes
+* Major diagnosis code
+* Cancer diagnoses
+* Age
+* Medication count
+* BMI
+* Diet
+For example, diet_plant(factor score for high plant-based pattern) and diet_highprotfat (factor score for high protein/fat pattern) reveal that daily diet really matter to these patients.
+
+__Finding 4: Seasonal Variable Has Some Influence But Not Obvious.__
+From three classification models we can see that season_death (what season the patients were on when they died) show some feature importance but they're not significant.
+But this study only focus on death season. Other research team can focus on admission season or birth season for further study if interested.
+
+## Perception
+Finally, the whole research exploratory project comes to end. I really learned a lot from this practicum. First, My R coding ability gets stupendous improvement. The whole project is coded with R language. From simple pipeline to self-make function in random forest, I feel more familiar with R right now. Second, my capability of processing variables increases a lot. CTS dataset has 100,000+ patients and 150+ variables, it's a great challenge to deal with it. I really enjoy check every single variable and transform it carefully.
+Last but least, I learn how to build XGBoot model in this study, it's queit a effective tool in machine learning especially this huge dataset. And I flexiblly use Random Forest model and Bagging model to compare their performance. Also I did used Logistic Model and QDA model to test the data, but didn't put them in the report for time limit. Thank you all.
+
